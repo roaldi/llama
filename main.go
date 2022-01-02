@@ -6,12 +6,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/inancgumus/screen"
-  	"github.com/jwalton/go-supportscolor"
+	"github.com/jwalton/go-supportscolor"
 	"github.com/muesli/termenv"
+	pxl "github.com/roaldi/pxl"
 	"github.com/sahilm/fuzzy"
 	"io/fs"
 	"io/ioutil"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,15 +23,15 @@ import (
 )
 
 var (
-	contextOptions = []string{"select","paste","delete","move","settings"}
-	contextCursor = 0
-	fileSource = ""
-	modified  = lipgloss.NewStyle().Foreground(lipgloss.Color("#588FE6"))
-	added     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6ECC8E"))
-	untracked = lipgloss.NewStyle().Foreground(lipgloss.Color("#D95C50"))
+	contextOptions = []string{"select", "paste", "delete", "move", "settings"}
+	contextCursor  = 0
+	fileSource     = ""
+	modified       = lipgloss.NewStyle().Foreground(lipgloss.Color("#588FE6"))
+	added          = lipgloss.NewStyle().Foreground(lipgloss.Color("#6ECC8E"))
+	untracked      = lipgloss.NewStyle().Foreground(lipgloss.Color("#D95C50"))
 
-	cursor    = lipgloss.NewStyle().Background(lipgloss.Color("#825DF2")).Foreground(lipgloss.Color("#FFFFFF"))
-	bar       = lipgloss.NewStyle().Background(lipgloss.Color("#5C5C5C")).Foreground(lipgloss.Color("#FFFFFF"))
+	cursor = lipgloss.NewStyle().Background(lipgloss.Color("#825DF2")).Foreground(lipgloss.Color("#FFFFFF"))
+	bar    = lipgloss.NewStyle().Background(lipgloss.Color("#5C5C5C")).Foreground(lipgloss.Color("#FFFFFF"))
 )
 
 func checkExtension(extension string) string {
@@ -40,7 +42,7 @@ func checkExtension(extension string) string {
 	// Getting environmental list ensures we get the correct home directory, and allows extending to other directories in the future
 	environsList := os.Environ()
 	for _, envVar := range environsList {
-		if envVar[0:4] == "HOME"{
+		if envVar[0:4] == "HOME" {
 			varTemp := envVar[5:]
 			searchPaths = append(searchPaths, varTemp)
 		}
@@ -59,11 +61,11 @@ func checkExtension(extension string) string {
 	// If .llamarc doesn't exist, default to less
 	if len(extHandling) == 0 {
 		return "less"
-	// Otherwise, open and look through line by line
+		// Otherwise, open and look through line by line
 	} else {
 		extLine := Split(string(extHandling), "\n")
 		for _, line := range extLine {
-			if extension == Split(line, ":")[0]{
+			if extension == Split(line, ":")[0] {
 				return Split(line, ":")[1]
 			}
 		}
@@ -115,15 +117,16 @@ func main() {
 
 	m := &model{
 		contextMenu: false,
-		path:      path,
-		width:     80,
-		height:    60,
-		positions: make(map[string]position),
+		imageView:   false,
+		path:        path,
+		width:       80,
+		height:      60,
+		positions:   make(map[string]position),
 	}
 	m.list()
 	m.status()
 
-  screen.Clear()
+	screen.Clear()
 	screen.MoveTopLeft()
 	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
 
@@ -134,7 +137,8 @@ func main() {
 }
 
 type model struct {
-	contextMenu	   bool						 // Whether to display the context menu or not
+	imageView      bool                      // User is viewing an image
+	contextMenu    bool                      // User is in the context menu
 	path           string                    // Current dir path we are looking at.
 	files          []fs.DirEntry             // Files we are looking at.
 	c, r           int                       // Selector position in columns and rows.
@@ -150,7 +154,7 @@ type model struct {
 	prevName       string                    // Base name of previous directory before "up".
 	findPrevName   bool                      // On View(), set c&r to point to prevName.
 	exitCode       int                       // Exit code.
-	err			   error
+	err            error
 }
 
 type position struct {
@@ -210,30 +214,32 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "esc":
-			_, _ = fmt.Fprintln(os.Stderr) // Keep last item visible after prompt.
-			fmt.Println(m.path)            // Write to cd.
-			m.exitCode = 0
-			return m, tea.Quit
+			if m.imageView == false {
+				_, _ = fmt.Fprintln(os.Stderr) // Keep last item visible after prompt.
+				fmt.Println(m.path)            // Write to cd.
+				m.exitCode = 0
+				return m, tea.Quit
+			}
 
 		case "enter":
 			if m.contextMenu {
 				switch curOption := contextOptions[contextCursor]; curOption {
 				case "select":
-					fileSource = filepath.Join(m.path,m.cursorFileName())
+					fileSource = filepath.Join(m.path, m.cursorFileName())
 					m.contextMenu = false
 				case "paste":
-					cmd := exec.Command("cp","-r",fileSource, m.path)
-					_= cmd.Run()
+					cmd := exec.Command("cp", "-r", fileSource, m.path)
+					_ = cmd.Run()
 					m.list()
 					m.contextMenu = false
 				case "move":
-					cmd := exec.Command("mv",fileSource,m.path)
-					_= cmd.Run()
+					cmd := exec.Command("mv", fileSource, m.path)
+					_ = cmd.Run()
 					m.list()
 					m.contextMenu = false
 				case "delete":
-					cmd := exec.Command("rm","-rf",filepath.Join(m.path,m.cursorFileName()))
-					_= cmd.Run()
+					cmd := exec.Command("rm", "-rf", filepath.Join(m.path, m.cursorFileName()))
+					_ = cmd.Run()
 					m.list()
 					m.contextMenu = false
 				case "settings":
@@ -245,7 +251,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.editMode = true
 					_ = cmd.Run()
 					m.editMode = false
-					return m, tea.HideCursor
+					return m, nil
 				}
 			} else {
 
@@ -265,7 +271,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.list()
 					m.status()
 				} else {
-					// Open file.
+
+					// Read first 512 bytes to check MIME type
+					buffer := make([]byte, 512)
+					if f, err := os.Open(filepath.Join(m.path, m.cursorFileName())); err == nil {
+						f.Read(buffer)
+						f.Close()
+					}
+					contentType := http.DetectContentType(buffer)
+					// If a supported format (jpeg/png) display in terminal. Exits on "q"
+					if contentType == "image/png" || contentType == "image/jpeg" {
+						m.imageView = true
+						pxl.Display(filepath.Join(m.path, m.cursorFileName()))
+						m.imageView = false
+						return m, nil
+					}
+
 					var cmd *exec.Cmd
 
 					// Get extension as defined as the last word after the last period
@@ -284,10 +305,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case " ":
-			if m.contextMenu{
+			if m.contextMenu {
 				m.contextMenu = false
-			}else{
-				m.contextMenu=true
+			} else {
+				m.contextMenu = true
 			}
 
 		case "backspace":
@@ -313,7 +334,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if contextCursor == -1 {
 					contextCursor = len(contextOptions) - 1
 				}
-			}else {
+			} else {
 				m.r--
 				if m.r < 0 {
 					m.r = m.rows - 1
@@ -330,23 +351,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if contextCursor < len(contextOptions) {
 					contextCursor = contextCursor + 1
 				}
-				if contextCursor == len(contextOptions){
+				if contextCursor == len(contextOptions) {
 					contextCursor = 0
 				}
-				} else {
-					m.r++
-					if m.r >= m.rows {
-						m.r = 0
-						m.c++
-					}
-					if m.c >= m.columns {
-						m.c = 0
-					}
-					if m.c == m.columns-1 && (m.columns-1)*m.rows+m.r >= len(m.files) {
-						m.r = 0
-						m.c = 0
-					}
+			} else {
+				m.r++
+				if m.r >= m.rows {
+					m.r = 0
+					m.c++
 				}
+				if m.c >= m.columns {
+					m.c = 0
+				}
+				if m.c == m.columns-1 && (m.columns-1)*m.rows+m.r >= len(m.files) {
+					m.r = 0
+					m.c = 0
+				}
+			}
 		case "left":
 			m.c--
 			if m.c < 0 {
@@ -379,18 +400,20 @@ func (m *model) View() string {
 		selectedFile := ""
 		if fileSource != "" {
 			selectedFile = modified.Render("Selected File: " + fileSource)
-		}else {selectedFile = ""}
+		} else {
+			selectedFile = ""
+		}
 		buildString := bar.Render("Context Menu") + "\n"
-		buildString += added.Render("Focused file: " + m.cursorFileName()) + "\n"
-		for n, option := range contextOptions{
-			if n == contextCursor{
+		buildString += added.Render("Focused file: "+m.cursorFileName()) + "\n"
+		for n, option := range contextOptions {
+			if n == contextCursor {
 				buildString += " > " + cursor.Render(option) + "\n"
 			} else {
 				buildString += " > " + option + "\n"
 			}
 		}
 		buildString += "\n" + selectedFile + "\n" + "Spacebar to exit"
-	return buildString
+		return buildString
 	} else {
 
 		if len(m.files) == 0 {
